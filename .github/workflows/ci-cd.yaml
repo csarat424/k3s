@@ -76,7 +76,7 @@ jobs:
               command: ["sh", "-c"]
               args:
                 - |
-                  pip install pytest requests &&
+                  pip install -r /app/requirements.txt &&
                   cd /app &&
                   echo "Waiting for flask-app-service to be ready..." &&
                   for i in {1..10}; do
@@ -97,7 +97,7 @@ jobs:
             volumes:
             - name: app-volume
               hostPath:
-                path: $(/bin/pwd)  # Use absolute path explicitly
+                path: $(/bin/pwd)
                 type: Directory
             restartPolicy: Never
           EOF
