@@ -23,7 +23,6 @@ jobs:
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
           sudo chmod 644 /etc/rancher/k3s/k3s.yaml
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          # Wait for k3s to be ready
           for i in {1..30}; do
             kubectl get nodes && break
             echo "Waiting for k3s to be ready... ($i/30)"
@@ -43,15 +42,21 @@ jobs:
 
       - name: Load image into k3s
         run: |
-          sudo k3s crictl images  # Verify Docker is accessible
+          sudo k3s crictl images
           docker save flask-app:latest | sudo k3s ctr images import -
+
+      - name: Debug Helm rendering
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          helm template flask-app ./chart > rendered.yaml
+          cat rendered.yaml
 
       - name: Deploy with Helm
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           helm install flask-app ./chart --wait --timeout 2m
-          # Verify deployment
           kubectl get pods -l app=flask-app
 
       - name: Run integration tests
@@ -73,6 +78,12 @@ jobs:
                 - |
                   pip install pytest requests &&
                   cd /app &&
+                  echo "Waiting for flask-app-service to be ready..." &&
+                  for i in {1..10}; do
+                    curl -s http://flask-app-service/health && break
+                    echo "Service not ready, retrying in 2 seconds... ($i/10)"
+                    sleep 2
+                  done &&
                   for i in {1..5}; do
                     pytest app.py -v && exit 0
                     echo "Tests failed, retrying in 5 seconds... (Attempt $i/5)"
@@ -86,20 +97,30 @@ jobs:
             volumes:
             - name: app-volume
               hostPath:
-                path: $(pwd)
+                path: $(/bin/pwd)  # Use absolute path explicitly
                 type: Directory
             restartPolicy: Never
           EOF
-          # Wait for the pod to complete and check its logs
-          kubectl wait --for=condition=Completed pod/test-pod --timeout=5m
+          # Debug pod status before waiting
+          echo "Describing test-pod for debugging:"
+          kubectl describe pod test-pod || true
+          echo "Initial logs from test-pod:"
+          kubectl logs test-pod || true
+          # Wait for completion with timeout
+          kubectl wait --for=condition=Completed pod/test-pod --timeout=5m || {
+            echo "Test pod failed to complete, fetching more details:"
+            kubectl describe pod test-pod
+            kubectl logs test-pod
+            exit 1
+          }
+          # Output logs and check exit code
           kubectl logs test-pod
-          # Check the pod's exit code
-          EXIT_CODE=$(kubectl get pod test-pod -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+          EXIT_CODE=$(kubectl get pod test-pod -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' || echo "1")
           kubectl delete pod test-pod --force --grace-period=0
           [ "$EXIT_CODE" -eq 0 ] || exit 1
 
       - name: Cleanup
-        if: always()  # Run even if previous steps fail
+        if: always()
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
