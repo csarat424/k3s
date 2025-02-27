@@ -1,0 +1,63 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Install k3s
+        run: |
+          curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
+          sudo chmod 644 /etc/rancher/k3s/k3s.yaml
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl get nodes  # Verify k3s is running
+
+      - name: Install Helm
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+          chmod +x get_helm.sh
+          ./get_helm.sh
+
+      - name: Build Docker image
+        run: |
+          docker build -t flask-app:latest .
+
+      - name: Load image into k3s
+        run: |
+          sudo k3s crictl images  # Verify Docker is accessible
+          docker save flask-app:latest | sudo k3s ctr images import -
+
+      - name: Deploy with Helm
+        run: |
+          helm install flask-app ./chart --wait --timeout 2m
+
+      - name: Run integration tests
+        run: |
+          pip install -r requirements.txt
+          # Retry loop: attempt pytest up to 5 times with 5-second delays
+          for i in {1..5}; do
+            pytest app.py -v && exit 0
+            echo "Tests failed, retrying in 5 seconds... (Attempt $i/5)"
+            sleep 5
+          done
+          echo "Integration tests failed after 5 attempts"
+          exit 1
+
+      - name: Cleanup
+        if: always() # Run even if previous steps fail
+        run: |
+          helm uninstall flask-app || true
+          sudo k3s-uninstall.sh || true
