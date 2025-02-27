@@ -23,7 +23,13 @@ jobs:
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
           sudo chmod 644 /etc/rancher/k3s/k3s.yaml
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          kubectl get nodes  # Verify k3s is running
+          # Wait for k3s to be ready
+          for i in {1..30}; do
+            kubectl get nodes && break
+            echo "Waiting for k3s to be ready... ($i/30)"
+            sleep 2
+          done
+          kubectl get nodes || (echo "k3s failed to start" && exit 1)
 
       - name: Install Helm
         run: |
@@ -41,23 +47,61 @@ jobs:
           docker save flask-app:latest | sudo k3s ctr images import -
 
       - name: Deploy with Helm
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           helm install flask-app ./chart --wait --timeout 2m
+          # Verify deployment
+          kubectl get pods -l app=flask-app
 
       - name: Run integration tests
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
-          pip install -r requirements.txt
-          # Retry loop: attempt pytest up to 5 times with 5-second delays
-          for i in {1..5}; do
-            pytest app.py -v && exit 0
-            echo "Tests failed, retrying in 5 seconds... (Attempt $i/5)"
-            sleep 5
-          done
-          echo "Integration tests failed after 5 attempts"
-          exit 1
+          # Create a temporary pod to run the tests inside the cluster
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-pod
+          spec:
+            containers:
+            - name: tester
+              image: python:3.9-slim
+              command: ["sh", "-c"]
+              args:
+                - |
+                  pip install pytest requests &&
+                  cd /app &&
+                  for i in {1..5}; do
+                    pytest app.py -v && exit 0
+                    echo "Tests failed, retrying in 5 seconds... (Attempt $i/5)"
+                    sleep 5
+                  done
+                  echo "Integration tests failed after 5 attempts"
+                  exit 1
+              volumeMounts:
+              - name: app-volume
+                mountPath: /app
+            volumes:
+            - name: app-volume
+              hostPath:
+                path: $(pwd)
+                type: Directory
+            restartPolicy: Never
+          EOF
+          # Wait for the pod to complete and check its logs
+          kubectl wait --for=condition=Completed pod/test-pod --timeout=5m
+          kubectl logs test-pod
+          # Check the pod's exit code
+          EXIT_CODE=$(kubectl get pod test-pod -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
+          kubectl delete pod test-pod --force --grace-period=0
+          [ "$EXIT_CODE" -eq 0 ] || exit 1
 
       - name: Cleanup
-        if: always() # Run even if previous steps fail
+        if: always()  # Run even if previous steps fail
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           helm uninstall flask-app || true
           sudo k3s-uninstall.sh || true
