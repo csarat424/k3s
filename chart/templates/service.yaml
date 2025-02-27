@@ -7,6 +7,6 @@ spec:
     app: flask-app
   ports:
     - protocol: TCP
-      port: {{ .Values.service.port | quote }}  # Quote the value to avoid parsing issues
-      targetPort: 5000
+      port: {{ .Values.service.port }}  # No quote filter; keep```yaml
+      targetPort: 5001
   type: {{ .Values.service.type | quote }}
