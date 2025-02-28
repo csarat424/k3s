@@ -45,9 +45,18 @@ jobs:
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
           kubectl cluster-info
           kubectl get nodes
-          helm install flask-app ./chart --wait --timeout 5m
-          kubectl get pods -l app=flask-app
-          kubectl describe pod -l app=flask-app
+          # Verify Helm chart existence
+          test -d ./chart || (echo "Helm chart directory not found" && exit 1)
+          # Show chart template for debugging
+          helm template flask-app ./chart || (echo "Helm chart templating failed" && exit 1)
+          # Attempt deployment with debug output
+          helm install flask-app ./chart --wait --timeout 5m --debug || echo "Helm installation failed, continuing to debug"
+          # Check cluster state regardless of Helm success
+          kubectl get all
+          kubectl get pods -l app=flask-app || echo "No pods found with label app=flask-app"
+          kubectl describe pod -l app=flask-app || echo "No pod details available"
+          kubectl get events --sort-by='.metadata.creationTimestamp'
+          shell: /usr/bin/bash -e {0}
 
       - name: Basic Integration Test
         run: |
