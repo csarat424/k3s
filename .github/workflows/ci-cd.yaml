@@ -51,10 +51,13 @@ jobs:
 
       - name: Basic Integration Test
         run: |
-          kubectl run test-pod --rm --restart=Never --image=python:3.9-slim -- sh -c "
+          kubectl run test-pod --restart=Never --image=python:3.9-slim -- sh -c "
             pip install requests &&
             curl -s http://flask-app-service/health || (echo 'Health check failed' && exit 1)
           "
+          kubectl wait --for=condition=Ready pod/test-pod --timeout=60s
+          kubectl logs test-pod
+          kubectl delete pod test-pod
 
       - name: Cleanup
         if: always()
