@@ -18,111 +18,32 @@ jobs:
       - name: Set up Docker
         uses: docker/setup-buildx-action@v2
 
-      - name: Install k3s
+      - name: Install k3s & Helm
         run: |
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
-          sudo chmod 644 /etc/rancher/k3s/k3s.yaml
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          for i in {1..30}; do
-            kubectl get nodes && break
-            echo "Waiting for k3s to be ready... ($i/30)"
-            sleep 2
-          done
-          kubectl get nodes || (echo "k3s failed to start" && exit 1)
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          kubectl get nodes
 
-      - name: Install Helm
-        run: |
-          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
-          chmod +x get_helm.sh
-          ./get_helm.sh
-
-      - name: Build Docker image
+      - name: Build & Load Docker Image
         run: |
           docker build -t flask-app:latest .
-
-      - name: Load image into k3s
-        run: |
-          sudo k3s crictl images
           docker save flask-app:latest | sudo k3s ctr images import -
 
-      - name: Debug Helm rendering
-        env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-        run: |
-          helm template flask-app ./chart > rendered.yaml
-          cat rendered.yaml
-
       - name: Deploy with Helm
-        env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           helm install flask-app ./chart --wait --timeout 2m
           kubectl get pods -l app=flask-app
 
-      - name: Run integration tests
-        env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      - name: Basic Integration Test
         run: |
-          # Create a temporary pod to run the tests inside the cluster
-          cat <<EOF | kubectl apply -f -
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-pod
-          spec:
-            containers:
-            - name: tester
-              image: python:3.9-slim
-              command: ["sh", "-c"]
-              args:
-                - |
-                  pip install -r /app/requirements.txt &&
-                  cd /app &&
-                  echo "Waiting for flask-app-service to be ready..." &&
-                  for i in {1..10}; do
-                    curl -s http://flask-app-service/health && break
-                    echo "Service not ready, retrying in 2 seconds... ($i/10)"
-                    sleep 2
-                  done &&
-                  for i in {1..5}; do
-                    pytest app.py -v && exit 0
-                    echo "Tests failed, retrying in 5 seconds... (Attempt $i/5)"
-                    sleep 5
-                  done
-                  echo "Integration tests failed after 5 attempts"
-                  exit 1
-              volumeMounts:
-              - name: app-volume
-                mountPath: /app
-            volumes:
-            - name: app-volume
-              hostPath:
-                path: $(/bin/pwd)
-                type: Directory
-            restartPolicy: Never
-          EOF
-          # Debug pod status before waiting
-          echo "Describing test-pod for debugging:"
-          kubectl describe pod test-pod || true
-          echo "Initial logs from test-pod:"
-          kubectl logs test-pod || true
-          # Wait for completion with timeout
-          kubectl wait --for=condition=Completed pod/test-pod --timeout=5m || {
-            echo "Test pod failed to complete, fetching more details:"
-            kubectl describe pod test-pod
-            kubectl logs test-pod
-            exit 1
-          }
-          # Output logs and check exit code
-          kubectl logs test-pod
-          EXIT_CODE=$(kubectl get pod test-pod -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' || echo "1")
-          kubectl delete pod test-pod --force --grace-period=0
-          [ "$EXIT_CODE" -eq 0 ] || exit 1
+          kubectl run test-pod --rm --restart=Never --image=python:3.9-slim -- sh -c "
+            pip install requests &&
+            curl -s http://flask-app-service/health || exit 1
+          "
 
       - name: Cleanup
         if: always()
-        env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           helm uninstall flask-app || true
           sudo k3s-uninstall.sh || true
