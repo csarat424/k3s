@@ -21,31 +21,27 @@ jobs:
       - name: Install k3s
         run: |
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
-          sudo chmod 644 /etc/rancher/k3s/k3s.yaml  # Fix permission issue
+          # Verify k3s installation
+          k3s --version
+
+      - name: Wait for k3s to be Ready
+        run: |
+          kubectl wait --for=condition=Ready node/${HOSTNAME} --timeout=180s
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          sudo systemctl restart k3s  # Ensure k3s is running
-          
-          # Wait for k3s to be ready
-          for i in {1..30}; do
-            kubectl get nodes && break
-            echo "Waiting for k3s to be ready... ($i/30)"
-            sleep 2
-          done
-          
-          kubectl get nodes || (echo "k3s failed to start" && exit 1)
 
       - name: Build & Load Docker Image
         run: |
           docker build -t flask-app:latest .
           docker save flask-app:latest | sudo k3s ctr images import -
+          # Verify image import
+          sudo k3s ctr images ls | grep flask-app
 
       - name: Deploy with Helm
         run: |
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml  # Explicitly set KUBECONFIG
-          kubectl cluster-info  # Debug: Check if cluster is reachable
-          helm install flask-app ./chart --wait --timeout 2m
+          helm install flask-app ./chart --wait --timeout 5m
+          # Verify deployment
+          kubectl get deployments -l app=flask-app
           kubectl get pods -l app=flask-app
-
 
       - name: Basic Integration Test
         run: |
@@ -55,7 +51,7 @@ jobs:
           "
 
       - name: Cleanup
-        if: always()
+        if: always
         run: |
           helm uninstall flask-app || true
           sudo k3s-uninstall.sh || true
