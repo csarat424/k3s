@@ -18,14 +18,21 @@ jobs:
       - name: Set up Docker
         uses: docker/setup-buildx-action@v2
 
-      - name: Install k3s & Helm
+      - name: Install k3s
         run: |
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
           sudo chmod 644 /etc/rancher/k3s/k3s.yaml  # Fix permission issue
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          kubectl get nodes  # Ensure k3s is running
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
-
+          sudo systemctl restart k3s  # Ensure k3s is running
+          
+          # Wait for k3s to be ready
+          for i in {1..30}; do
+            kubectl get nodes && break
+            echo "Waiting for k3s to be ready... ($i/30)"
+            sleep 2
+          done
+          
+          kubectl get nodes || (echo "k3s failed to start" && exit 1)
 
       - name: Build & Load Docker Image
         run: |
@@ -34,8 +41,11 @@ jobs:
 
       - name: Deploy with Helm
         run: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml  # Explicitly set KUBECONFIG
+          kubectl cluster-info  # Debug: Check if cluster is reachable
           helm install flask-app ./chart --wait --timeout 2m
           kubectl get pods -l app=flask-app
+
 
       - name: Basic Integration Test
         run: |
