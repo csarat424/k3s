@@ -21,39 +21,43 @@ jobs:
       - name: Install k3s
         run: |
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
-          # Verify k3s installation
-          k3s --version
-
-      - name: Wait for k3s to be Ready
-        run: |
-          kubectl wait --for=condition=Ready node/${HOSTNAME} --timeout=180s
+          sudo chmod 644 /etc/rancher/k3s/k3s.yaml
+          sudo chown $USER:$USER /etc/rancher/k3s/k3s.yaml
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          sudo systemctl restart k3s
+          
+          # Wait for k3s to be ready
+          for i in {1..60}; do
+            kubectl get nodes && break
+            echo "Waiting for k3s to be ready... ($i/60)"
+            sleep 5
+          done
+          
+          kubectl get nodes || (echo "k3s failed to start" && exit 1)
 
       - name: Build & Load Docker Image
         run: |
           docker build -t flask-app:latest .
           docker save flask-app:latest | sudo k3s ctr images import -
-          # Verify image import
-          sudo k3s ctr images ls | grep flask-app
 
       - name: Deploy with Helm
         run: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl cluster-info
+          kubectl get nodes
           helm install flask-app ./chart --wait --timeout 5m
-          # Verify deployment
-          kubectl get deployments -l app=flask-app
           kubectl get pods -l app=flask-app
+          kubectl describe pod -l app=flask-app
 
       - name: Basic Integration Test
         run: |
           kubectl run test-pod --rm --restart=Never --image=python:3.9-slim -- sh -c "
             pip install requests &&
-            curl -s http://flask-app-service/health || exit 1
+            curl -s http://flask-app-service/health || (echo 'Health check failed' && exit 1)
           "
 
       - name: Cleanup
-        if: always
+        if: always()
         run: |
           helm uninstall flask-app || true
           sudo k3s-uninstall.sh || true
-
-          
