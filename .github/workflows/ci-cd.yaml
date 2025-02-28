@@ -21,9 +21,11 @@ jobs:
       - name: Install k3s & Helm
         run: |
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
+          sudo chmod 644 /etc/rancher/k3s/k3s.yaml  # Fix permission issue
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl get nodes  # Ensure k3s is running
           curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
-          kubectl get nodes
+
 
       - name: Build & Load Docker Image
         run: |
